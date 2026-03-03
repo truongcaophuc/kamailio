@@ -43,7 +43,7 @@ graph LR
 
 ```bash
 # 1. Clone repo
-git clone <repo-url>
+git clone https://github.com/truongcaophuc/kamailio.git
 cd kamailio
 
 # 2. Khởi động tất cả services
