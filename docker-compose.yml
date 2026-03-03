@@ -1,0 +1,194 @@
+version: '3.8'
+
+volumes:
+  grafana_data: {}
+  clickhouse_data: {}
+  kamailio_db: {}
+
+services:
+  # ============ PostgreSQL (Kamailio Auth DB) ============
+  postgres:
+    image: postgres:16-alpine
+    container_name: kamailio-postgres
+    restart: unless-stopped
+    volumes:
+      - kamailio_db:/var/lib/postgresql/data
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    environment:
+      - POSTGRES_DB=kamailio
+      - POSTGRES_USER=kamailio
+      - POSTGRES_PASSWORD=kamailiorw
+    ports:
+      - "5433:5432"
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U kamailio']
+      interval: 2s
+      timeout: 2s
+      retries: 15
+
+  # ============ Kamailio SIP Server ============
+  kamailio:
+    image: kamailio/kamailio-ci:latest
+    container_name: kamailio
+    restart: unless-stopped
+    ports:
+      - "5060:5060/udp"
+      - "5060:5060/tcp"
+      - "8080:8080/tcp"
+    volumes:
+      - ./kamailio.cfg:/etc/kamailio/kamailio.cfg:ro
+      - ./certs:/etc/kamailio/certs:ro
+    command: ["-f", "/etc/kamailio/kamailio.cfg"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rtpengine:
+        condition: service_started
+      heplify-server:
+        condition: service_started
+
+  # ============ Asterisk PBX ============
+  asterisk:
+    image: andrius/asterisk:latest
+    container_name: asterisk
+    restart: unless-stopped
+    ports:
+      - "5038:5038/tcp"
+    volumes:
+      - ./asterisk/pjsip_kamailio.conf:/etc/asterisk/pjsip.conf:ro
+      - ./asterisk/extensions_kamailio.conf:/etc/asterisk/extensions.conf:ro
+      - ./asterisk/sounds:/var/lib/asterisk/sounds/custom:ro
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        cd /var/lib/asterisk/sounds
+        curl -skL https://downloads.asterisk.org/pub/telephony/sounds/asterisk-core-sounds-en-ulaw-current.tar.gz | tar xzf -
+        mkdir -p /var/lib/asterisk/moh
+        cd /var/lib/asterisk/moh
+        curl -skL https://downloads.asterisk.org/pub/telephony/sounds/asterisk-moh-opsound-ulaw-current.tar.gz | tar xzf -
+        exec /usr/sbin/asterisk -vvvdddf -T -W -U asterisk -p
+
+  # ============ RTPEngine ============
+  # Bridge mode: all media stays within Docker network via TURN relay
+  rtpengine:
+    image: drachtio/rtpengine:latest
+    container_name: rtpengine
+    restart: unless-stopped
+    environment:
+      - CLOUD=none
+    entrypoint: ["/bin/sh", "-c", "IP=$$(hostname -i) && echo \"RTPEngine IP=$$IP\" && exec rtpengine --interface=$$IP --listen-ng=0.0.0.0:22222 --port-min=30000 --port-max=30100 --log-level=7 --foreground --log-stderr --delete-delay=0"]
+
+  # ============ TURN Server (coturn) ============
+  # Solves Docker Desktop Windows UDP NAT issue for WebRTC
+  # Browser connects via TURN/TCP (reliable), media relayed within Docker bridge
+  coturn:
+    image: coturn/coturn:latest
+    container_name: coturn
+    restart: unless-stopped
+    ports:
+      - "3478:3478/tcp"
+      - "3478:3478/udp"
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        RELAY_IP=$$(hostname -i)
+        echo "coturn relay IP=$$RELAY_IP"
+        exec turnserver \
+          --listening-port=3478 \
+          --listening-ip=0.0.0.0 \
+          --relay-ip=$$RELAY_IP \
+          --min-port=49152 \
+          --max-port=49252 \
+          --lt-cred-mech \
+          --user=webrtc:webrtc \
+          --realm=localhost \
+          --fingerprint \
+          --no-tls \
+          --no-dtls \
+          --allowed-peer-ip=172.16.0.0-172.31.255.255 \
+          --allowed-peer-ip=10.0.0.0-10.255.255.255 \
+          --allowed-peer-ip=192.168.0.0-192.168.255.255 \
+          --log-file=stdout \
+          --verbose
+
+  # ============ Homer (SIP Monitoring UI) ============
+  clickhouse-server:
+    image: clickhouse/clickhouse-server:23.3-alpine
+    container_name: clickhouse-server
+    restart: unless-stopped
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+    environment:
+      - CLICKHOUSE_USER=qryn
+      - CLICKHOUSE_PASSWORD=demo
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+    healthcheck:
+      test: ['CMD', 'wget', '--spider', '-q', '127.0.0.1:8123/ping']
+      interval: 1s
+      timeout: 1s
+      retries: 30
+
+  qryn:
+    image: qxip/qryn:latest
+    container_name: qryn
+    restart: unless-stopped
+    ports:
+      - "3100:3100"
+    environment:
+      - CLICKHOUSE_SERVER=clickhouse-server
+      - CLICKHOUSE_AUTH=qryn:demo
+    depends_on:
+      clickhouse-server:
+        condition: service_healthy
+
+  heplify-server:
+    image: ghcr.io/sipcapture/heplify-server:latest
+    container_name: heplify-server
+    restart: unless-stopped
+    ports:
+      - "9060:9060"
+      - "9060:9060/udp"
+      - "9061:9061/tcp"
+      - "9096:9096"
+    environment:
+      - "HEPLIFYSERVER_HEPADDR=0.0.0.0:9060"
+      - "HEPLIFYSERVER_HEPTCPADDR=0.0.0.0:9061"
+      - "HEPLIFYSERVER_DBSHEMA=mock"
+      - "HEPLIFYSERVER_DBDRIVER=mock"
+      - "HEPLIFYSERVER_LOGLVL=info"
+      - "HEPLIFYSERVER_LOGSTD=true"
+      - "HEPLIFYSERVER_PROMADDR=0.0.0.0:9096"
+      - "HEPLIFYSERVER_DEDUP=false"
+      - "HEPLIFYSERVER_LOKIURL=http://qryn:3100/loki/api/v1/push"
+      - "HEPLIFYSERVER_LOKITIMER=1"
+    depends_on:
+      - qryn
+
+  grafana:
+    image: grafana/grafana-oss:10.4.3
+    container_name: grafana
+    restart: unless-stopped
+    volumes:
+      - grafana_data:/var/lib/grafana
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_EXPLORE_ENABLED=true
+    ports:
+      - "3000:3000"
+    depends_on:
+      - qryn
+
+  # ============ WebRTC Softphone UI ============
+  webphone:
+    image: nginx:alpine
+    container_name: webphone
+    restart: unless-stopped
+    ports:
+      - "8181:80"
+    volumes:
+      - ./webphone/index.html:/usr/share/nginx/html/index.html:ro
+      - ./webphone/nginx.conf:/etc/nginx/conf.d/default.conf:ro

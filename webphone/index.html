@@ -1,0 +1,756 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WebRTC Softphone</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #1a1a2e;
+      color: #eee;
+      min-height: 100vh;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+    }
+    .phone {
+      background: #16213e;
+      border-radius: 20px;
+      padding: 30px;
+      width: 360px;
+      box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+    }
+    h1 {
+      text-align: center;
+      font-size: 18px;
+      margin-bottom: 20px;
+      color: #0f3460;
+      background: #e94560;
+      padding: 10px;
+      border-radius: 10px;
+      color: white;
+    }
+    .status {
+      text-align: center;
+      padding: 8px;
+      margin-bottom: 15px;
+      border-radius: 8px;
+      font-size: 13px;
+      font-weight: 600;
+    }
+    .status.disconnected { background: #533; color: #f88; }
+    .status.connecting { background: #553; color: #ff8; }
+    .status.registered { background: #353; color: #8f8; }
+    .status.calling { background: #335; color: #8bf; }
+    .status.ringing { background: #553; color: #ff8; }
+    .status.active { background: #353; color: #8f8; }
+
+    .section {
+      margin-bottom: 15px;
+    }
+    .section label {
+      display: block;
+      font-size: 11px;
+      color: #888;
+      margin-bottom: 4px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+    }
+    input {
+      width: 100%;
+      padding: 10px 12px;
+      border: 1px solid #333;
+      border-radius: 8px;
+      background: #0f3460;
+      color: #eee;
+      font-size: 14px;
+      outline: none;
+    }
+    input:focus { border-color: #e94560; }
+    input::placeholder { color: #666; }
+
+    .btn-row {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+    button {
+      flex: 1;
+      padding: 12px;
+      border: none;
+      border-radius: 10px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    button:hover { transform: translateY(-1px); }
+    button:active { transform: translateY(0); }
+    button:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
+
+    .btn-register { background: #0f3460; color: #8bf; }
+    .btn-unregister { background: #333; color: #f88; }
+    .btn-call { background: #28a745; color: white; }
+    .btn-answer { background: #17a2b8; color: white; }
+    .btn-hangup { background: #e94560; color: white; }
+    .btn-mute { background: #6c757d; color: white; }
+    .btn-mute.muted { background: #e94560; }
+
+    .dialpad {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 6px;
+      margin-top: 10px;
+    }
+    .dialpad button {
+      padding: 14px;
+      font-size: 18px;
+      background: #0f3460;
+      color: #eee;
+      border-radius: 10px;
+    }
+    .dialpad button:hover { background: #1a4a8a; }
+
+    .log {
+      margin-top: 15px;
+      padding: 10px;
+      background: #0a0a1a;
+      border-radius: 8px;
+      font-family: monospace;
+      font-size: 11px;
+      max-height: 120px;
+      overflow-y: auto;
+      color: #888;
+    }
+    .log div { margin-bottom: 2px; }
+    .log .error { color: #f88; }
+    .log .success { color: #8f8; }
+    .log .info { color: #8bf; }
+
+    audio { display: none; }
+  </style>
+</head>
+<body>
+  <div class="phone">
+    <h1>WebRTC Softphone</h1>
+
+    <div id="status" class="status disconnected">Disconnected</div>
+
+    <audio id="remoteAudio" autoplay></audio>
+    <audio id="ringtone" loop></audio>
+
+    <div class="section">
+      <label>SIP Server (WebSocket)</label>
+      <input id="server" type="text" value="ws://localhost:8080" placeholder="ws://host:port" />
+    </div>
+
+    <div class="section">
+      <label>SIP User</label>
+      <input id="user" type="text" value="1000" placeholder="username" />
+    </div>
+
+    <div class="section">
+      <label>Password</label>
+      <input id="pass" type="password" value="1234" placeholder="password" />
+    </div>
+
+    <div class="section">
+      <label>SIP Domain</label>
+      <input id="domain" type="text" value="localhost" placeholder="domain" />
+    </div>
+
+    <div class="btn-row">
+      <button id="btnRegister" class="btn-register">Register</button>
+      <button id="btnUnregister" class="btn-unregister" disabled>Unregister</button>
+    </div>
+
+    <div class="section">
+      <label>Call To</label>
+      <input id="target" type="text" placeholder="1001" />
+    </div>
+
+    <div class="btn-row">
+      <button id="btnCall" class="btn-call" disabled>Call</button>
+      <button id="btnAnswer" class="btn-answer" disabled>Answer</button>
+      <button id="btnHangup" class="btn-hangup" disabled>Hangup</button>
+    </div>
+
+    <div class="btn-row">
+      <button id="btnMute" class="btn-mute" disabled>Mute</button>
+      <button id="btnHold" class="btn-mute" disabled>Hold</button>
+    </div>
+
+    <div class="dialpad" id="dialpad">
+      <button data-dtmf="1">1</button>
+      <button data-dtmf="2">2</button>
+      <button data-dtmf="3">3</button>
+      <button data-dtmf="4">4</button>
+      <button data-dtmf="5">5</button>
+      <button data-dtmf="6">6</button>
+      <button data-dtmf="7">7</button>
+      <button data-dtmf="8">8</button>
+      <button data-dtmf="9">9</button>
+      <button data-dtmf="*">*</button>
+      <button data-dtmf="0">0</button>
+      <button data-dtmf="#">#</button>
+    </div>
+
+    <div class="log" id="log"></div>
+  </div>
+
+  <script src="https://unpkg.com/sip.js@0.21.2/lib/platform/web/index.js" type="module"></script>
+  <script type="module">
+    // SIP.js 0.21 - using UserAgent API for full control
+    import {
+      UserAgent,
+      Registerer,
+      RegistererState,
+      Inviter,
+      SessionState
+    } from "https://cdn.jsdelivr.net/npm/sip.js@0.21.2/+esm";
+
+    // DOM elements
+    const statusEl = document.getElementById('status');
+    const logEl = document.getElementById('log');
+    const btnRegister = document.getElementById('btnRegister');
+    const btnUnregister = document.getElementById('btnUnregister');
+    const btnCall = document.getElementById('btnCall');
+    const btnAnswer = document.getElementById('btnAnswer');
+    const btnHangup = document.getElementById('btnHangup');
+    const btnMute = document.getElementById('btnMute');
+    const btnHold = document.getElementById('btnHold');
+    const remoteAudio = document.getElementById('remoteAudio');
+
+    let userAgent = null;
+    let registerer = null;
+    let currentSession = null;
+    let isMuted = false;
+    let isHeld = false;
+
+    // SDP modifier: no-op (TURN relay handles Docker networking)
+    const fixDockerSDP = (description) => {
+      return Promise.resolve(description);
+    };
+
+    // ---- Audio Tone Generator (Web Audio API) ----
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    let audioCtx = null;
+    function getAudioCtx() {
+      if (!audioCtx) audioCtx = new AudioCtx();
+      return audioCtx;
+    }
+
+    // DTMF tone frequencies (standard ITU-T dual-tone)
+    const DTMF_FREQ = {
+      '1': [697,1209], '2': [697,1336], '3': [697,1477],
+      '4': [770,1209], '5': [770,1336], '6': [770,1477],
+      '7': [852,1209], '8': [852,1336], '9': [852,1477],
+      '*': [941,1209], '0': [941,1336], '#': [941,1477]
+    };
+
+    function playDtmfTone(digit, durationMs = 120) {
+      const freqs = DTMF_FREQ[digit];
+      if (!freqs) return;
+      const ctx = getAudioCtx();
+      const gain = ctx.createGain();
+      gain.gain.value = 0.15;
+      gain.connect(ctx.destination);
+      freqs.forEach(f => {
+        const osc = ctx.createOscillator();
+        osc.type = 'sine';
+        osc.frequency.value = f;
+        osc.connect(gain);
+        osc.start();
+        osc.stop(ctx.currentTime + durationMs / 1000);
+      });
+    }
+
+    // Ringtone: repeating ring pattern (440Hz + 480Hz, 2s on / 4s off)
+    let ringtoneInterval = null;
+    let ringtoneOscs = [];
+    function startRingtone() {
+      stopRingtone();
+      function ring() {
+        const ctx = getAudioCtx();
+        const gain = ctx.createGain();
+        gain.gain.value = 0.2;
+        gain.connect(ctx.destination);
+        [440, 480].forEach(f => {
+          const osc = ctx.createOscillator();
+          osc.type = 'sine';
+          osc.frequency.value = f;
+          osc.connect(gain);
+          osc.start();
+          osc.stop(ctx.currentTime + 2);
+          ringtoneOscs.push(osc);
+        });
+      }
+      ring();
+      ringtoneInterval = setInterval(ring, 4000);
+    }
+    function stopRingtone() {
+      if (ringtoneInterval) { clearInterval(ringtoneInterval); ringtoneInterval = null; }
+      ringtoneOscs.forEach(o => { try { o.stop(); } catch(e){} });
+      ringtoneOscs = [];
+    }
+
+    // Busy tone: 480Hz + 620Hz, 0.5s on / 0.5s off, plays 3 times
+    function playBusyTone() {
+      const ctx = getAudioCtx();
+      for (let i = 0; i < 3; i++) {
+        const gain = ctx.createGain();
+        gain.gain.value = 0.15;
+        gain.connect(ctx.destination);
+        [480, 620].forEach(f => {
+          const osc = ctx.createOscillator();
+          osc.type = 'sine';
+          osc.frequency.value = f;
+          osc.connect(gain);
+          osc.start(ctx.currentTime + i * 1);
+          osc.stop(ctx.currentTime + i * 1 + 0.5);
+        });
+      }
+    }
+
+    // Logging
+    function log(msg, type = '') {
+      const div = document.createElement('div');
+      div.className = type;
+      div.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+      logEl.appendChild(div);
+      logEl.scrollTop = logEl.scrollHeight;
+      console.log(msg);
+    }
+
+    function setStatus(text, cls) {
+      statusEl.textContent = text;
+      statusEl.className = 'status ' + cls;
+    }
+
+    function updateButtons(state) {
+      btnRegister.disabled = state !== 'disconnected';
+      btnUnregister.disabled = state === 'disconnected';
+      btnCall.disabled = state !== 'registered';
+      btnAnswer.disabled = state !== 'ringing';
+      btnHangup.disabled = !['calling', 'active', 'ringing'].includes(state);
+      btnMute.disabled = state !== 'active';
+      btnHold.disabled = state !== 'active';
+    }
+
+    // Attach debug listeners + media to audio element
+    let pcDebugAttached = false;
+    function setupRemoteMedia(session) {
+      const pc = session.sessionDescriptionHandler?.peerConnection;
+      if (!pc) {
+        log('setupRemoteMedia: PeerConnection not ready yet', 'info');
+        return;
+      }
+
+      if (!pcDebugAttached) {
+        pcDebugAttached = true;
+        log(`PC exists! iceState=${pc.iceConnectionState} gathering=${pc.iceGatheringState}`, 'info');
+
+        // Log the remote SDP (answer) if already set
+        if (pc.remoteDescription) {
+          const sdp = pc.remoteDescription.sdp;
+          const cLine = sdp.match(/c=IN IP4 [\d.]+/)?.[0] || 'no c= line';
+          const mLine = sdp.match(/m=audio \S+/)?.[0] || 'no m= line';
+          const candidates = sdp.match(/a=candidate:.*/g) || [];
+          log(`Remote SDP: ${cLine}, ${mLine}`, 'info');
+          candidates.forEach(c => log(`Remote candidate (SDP): ${c}`, 'info'));
+        }
+
+        // Debug: ICE candidate gathering
+        pc.addEventListener('icecandidate', (e) => {
+          if (e.candidate) {
+            log(`Local ICE candidate: ${e.candidate.candidate}`, 'info');
+          } else {
+            log('ICE gathering complete', 'success');
+          }
+        });
+
+        // Debug: ICE connection state
+        pc.addEventListener('iceconnectionstatechange', () => {
+          log(`ICE connection: ${pc.iceConnectionState}`, pc.iceConnectionState === 'connected' ? 'success' : 'info');
+          if (pc.iceConnectionState === 'connected') {
+            // Log the selected candidate pair
+            pc.getStats().then(stats => {
+              stats.forEach(report => {
+                if (report.type === 'candidate-pair' && report.nominated) {
+                  const local = stats.get(report.localCandidateId);
+                  const remote = stats.get(report.remoteCandidateId);
+                  log(`ICE pair: ${local?.address}:${local?.port} ↔ ${remote?.address}:${remote?.port}`, 'success');
+                  log(`ICE pair type: local=${local?.candidateType} remote=${remote?.candidateType}`, 'info');
+                }
+              });
+            });
+          }
+          if (pc.iceConnectionState === 'failed') {
+            log('ICE FAILED - browser cannot reach RTPEngine media port', 'error');
+          }
+        });
+
+        // Debug: ICE gathering state
+        pc.addEventListener('icegatheringstatechange', () => {
+          log(`ICE gathering: ${pc.iceGatheringState}`, 'info');
+        });
+
+        // Debug: DTLS/connection state (this tracks the DTLS handshake!)
+        pc.addEventListener('connectionstatechange', () => {
+          log(`DTLS/Connection: ${pc.connectionState}`, pc.connectionState === 'connected' ? 'success' : 'info');
+          if (pc.connectionState === 'failed') {
+            log('DTLS FAILED - handshake did not complete through Docker NAT', 'error');
+            // Dump stats for debugging
+            pc.getStats().then(stats => {
+              stats.forEach(report => {
+                if (report.type === 'candidate-pair' && (report.nominated || report.state === 'failed')) {
+                  log(`Pair state=${report.state} sent=${report.bytesSent} recv=${report.bytesReceived}`, 'error');
+                }
+              });
+            });
+          }
+        });
+
+        // Debug: signaling state (tracks SDP negotiation)
+        pc.addEventListener('signalingstatechange', () => {
+          log(`Signaling: ${pc.signalingState}`, 'info');
+          // Log remote SDP when it's set
+          if (pc.remoteDescription && (pc.signalingState === 'stable' || pc.signalingState === 'have-remote-offer')) {
+            const sdp = pc.remoteDescription.sdp;
+            const cLine = sdp.match(/c=IN IP4 [\d.]+/)?.[0] || 'no c= line';
+            const mLine = sdp.match(/m=audio \S+/)?.[0] || 'no m= line';
+            const setupLine = sdp.match(/a=setup:\S+/)?.[0] || 'no setup';
+            const fingerprint = sdp.match(/a=fingerprint:\S+ \S+/)?.[0] || 'no fingerprint';
+            const candidates = sdp.match(/a=candidate:.*/g) || [];
+            log(`Answer SDP: ${cLine}, ${mLine}, ${setupLine}`, 'success');
+            log(`DTLS: ${fingerprint}`, 'info');
+            candidates.forEach(c => log(`Remote ICE: ${c}`, 'info'));
+          }
+        });
+      }
+
+      pc.addEventListener('track', (e) => {
+        log('Remote track received', 'success');
+        const stream = e.streams[0] || new MediaStream([e.track]);
+        remoteAudio.srcObject = stream;
+        remoteAudio.volume = 1.0;
+        remoteAudio.play().then(() => {
+          log('Audio element playing (play() resolved)', 'success');
+        }).catch(err => {
+          log(`Audio play() BLOCKED: ${err.message}`, 'error');
+        });
+        remoteAudio.onerror = (err) => log(`Audio error: ${err}`, 'error');
+        // Monitor inbound audio stats every 3 seconds
+        if (!session._statsInterval) {
+          session._statsInterval = setInterval(() => {
+            if (!pc || pc.connectionState === 'closed') {
+              clearInterval(session._statsInterval);
+              return;
+            }
+            pc.getStats().then(stats => {
+              stats.forEach(report => {
+                if (report.type === 'inbound-rtp' && report.kind === 'audio') {
+                  log(`Audio RX: ${report.packetsReceived} pkts, ${report.bytesReceived} bytes, lost=${report.packetsLost}`, 'info');
+                }
+              });
+            });
+          }, 3000);
+        }
+      });
+    }
+
+    // Handle session state changes
+    function watchSession(session) {
+      currentSession = session;
+      pcDebugAttached = false;
+      setupRemoteMedia(session);
+
+      session.stateChange.addListener((state) => {
+        log(`Session state: ${state}`, 'info');
+        switch (state) {
+          case SessionState.Establishing:
+            stopRingtone();
+            setStatus('Connecting call...', 'calling');
+            updateButtons('calling');
+            // Try to attach debug listeners now (PC should exist after INVITE sent)
+            setupRemoteMedia(session);
+            break;
+          case SessionState.Established:
+            stopRingtone();
+            setStatus('Call active', 'active');
+            updateButtons('active');
+            setupRemoteMedia(session);
+            break;
+          case "Terminating":
+            // Immediately update UI when call is ending (don't wait for Terminated)
+            stopRingtone();
+            setStatus('Ending call...', 'connecting');
+            updateButtons('registered');
+            if (currentSession?._statsInterval) clearInterval(currentSession._statsInterval);
+            isMuted = false;
+            isHeld = false;
+            btnMute.textContent = 'Mute';
+            btnMute.classList.remove('muted');
+            btnHold.textContent = 'Hold';
+            remoteAudio.srcObject = null;
+            break;
+          case SessionState.Terminated:
+            stopRingtone();
+            setStatus('Registered', 'registered');
+            updateButtons('registered');
+            if (currentSession?._statsInterval) clearInterval(currentSession._statsInterval);
+            currentSession = null;
+            isMuted = false;
+            isHeld = false;
+            pcDebugAttached = false;
+            btnMute.textContent = 'Mute';
+            btnMute.classList.remove('muted');
+            btnHold.textContent = 'Hold';
+            remoteAudio.srcObject = null;
+            break;
+        }
+      });
+    }
+
+    // ---- Register ----
+    btnRegister.addEventListener('click', async () => {
+      const server = document.getElementById('server').value;
+      const user = document.getElementById('user').value;
+      const pass = document.getElementById('pass').value;
+      const domain = document.getElementById('domain').value;
+
+      try {
+        setStatus('Connecting...', 'connecting');
+        log(`Connecting to ${server}...`);
+
+        const uri = UserAgent.makeURI(`sip:${user}@${domain}`);
+        if (!uri) throw new Error('Invalid SIP URI');
+
+        userAgent = new UserAgent({
+          uri: uri,
+          transportOptions: { server: server },
+          authorizationUsername: user,
+          authorizationPassword: pass,
+          sessionDescriptionHandlerFactoryOptions: {
+            peerConnectionConfiguration: {
+              iceServers: [
+                {
+                  urls: 'turn:localhost:3478?transport=tcp',
+                  username: 'webrtc',
+                  credential: 'webrtc'
+                }
+              ],
+              iceTransportPolicy: 'relay'
+            }
+          },
+          delegate: {
+            onInvite: (invitation) => {
+              log(`Incoming call from ${invitation.remoteIdentity.uri}`, 'info');
+              currentSession = invitation;
+              setStatus(`Incoming: ${invitation.remoteIdentity.uri}`, 'ringing');
+              updateButtons('ringing');
+              startRingtone();
+              watchSession(invitation);
+            }
+          }
+        });
+
+        userAgent.stateChange.addListener((state) => {
+          log(`UA state: ${state}`, 'info');
+        });
+
+        await userAgent.start();
+        log('Connected to server', 'success');
+
+        registerer = new Registerer(userAgent);
+        registerer.stateChange.addListener((state) => {
+          log(`Registration: ${state}`, 'info');
+          if (state === RegistererState.Registered) {
+            setStatus(`Registered: ${user}@${domain}`, 'registered');
+            updateButtons('registered');
+            log('Registered successfully', 'success');
+          } else if (state === RegistererState.Unregistered) {
+            setStatus('Registration failed - check credentials', 'disconnected');
+            updateButtons('disconnected');
+            log('Registration failed', 'error');
+          }
+        });
+
+        await registerer.register();
+        log('Registration request sent...', 'info');
+
+      } catch (err) {
+        log(`Error: ${err.message}`, 'error');
+        setStatus('Connection failed', 'disconnected');
+        updateButtons('disconnected');
+      }
+    });
+
+    // ---- Unregister ----
+    btnUnregister.addEventListener('click', async () => {
+      try {
+        if (registerer) await registerer.unregister();
+        if (userAgent) await userAgent.stop();
+        setStatus('Disconnected', 'disconnected');
+        updateButtons('disconnected');
+        log('Unregistered', 'info');
+      } catch (err) {
+        log(`Error: ${err.message}`, 'error');
+      }
+    });
+
+    // ---- Call ----
+    btnCall.addEventListener('click', async () => {
+      const target = document.getElementById('target').value;
+      const domain = document.getElementById('domain').value;
+      if (!target) { alert('Enter a call target'); return; }
+
+      try {
+        const targetUri = UserAgent.makeURI(`sip:${target}@${domain}`);
+        if (!targetUri) throw new Error('Invalid target URI');
+
+        const inviter = new Inviter(userAgent, targetUri, {
+          sessionDescriptionHandlerOptions: {
+            constraints: { audio: true, video: false }
+          },
+          sessionDescriptionHandlerModifiers: [fixDockerSDP]
+        });
+
+        watchSession(inviter);
+        setStatus(`Calling ${target}...`, 'calling');
+        updateButtons('calling');
+        log(`Calling ${target}@${domain}...`);
+
+        await inviter.invite({
+          requestDelegate: {
+            onAccept: () => log('INVITE accepted (200 OK)', 'success'),
+            onReject: (response) => {
+              const code = response.message.statusCode;
+              log(`INVITE rejected: ${code}`, 'error');
+              if (code === 486 || code === 600) {
+                playBusyTone();
+              }
+            }
+          }
+        });
+        // PC should exist now after invite() - attach debug listeners
+        setupRemoteMedia(inviter);
+      } catch (err) {
+        log(`Call error: ${err.message}`, 'error');
+        setStatus('Registered', 'registered');
+        updateButtons('registered');
+      }
+    });
+
+    // ---- Answer ----
+    btnAnswer.addEventListener('click', async () => {
+      if (!currentSession || !currentSession.accept) {
+        log('No incoming call to answer', 'error');
+        return;
+      }
+      try {
+        await currentSession.accept({
+          sessionDescriptionHandlerOptions: {
+            constraints: { audio: true, video: false }
+          },
+          sessionDescriptionHandlerModifiers: [fixDockerSDP]
+        });
+        log('Call answered', 'success');
+      } catch (err) {
+        log(`Answer error: ${err.message}`, 'error');
+      }
+    });
+
+    // ---- Hangup ----
+    btnHangup.addEventListener('click', async () => {
+      if (!currentSession) return;
+      try {
+        switch (currentSession.state) {
+          case SessionState.Initial:
+          case SessionState.Establishing:
+            if (currentSession.cancel) currentSession.cancel();
+            else if (currentSession.reject) currentSession.reject();
+            break;
+          case SessionState.Established:
+            currentSession.bye();
+            break;
+        }
+        log('Call ended', 'info');
+      } catch (err) {
+        log(`Hangup error: ${err.message}`, 'error');
+      }
+    });
+
+    // ---- Mute ----
+    btnMute.addEventListener('click', () => {
+      if (!currentSession) return;
+      const pc = currentSession.sessionDescriptionHandler?.peerConnection;
+      if (!pc) return;
+
+      isMuted = !isMuted;
+      pc.getSenders().forEach(sender => {
+        if (sender.track && sender.track.kind === 'audio') {
+          sender.track.enabled = !isMuted;
+        }
+      });
+      btnMute.textContent = isMuted ? 'Unmute' : 'Mute';
+      btnMute.classList.toggle('muted', isMuted);
+      log(isMuted ? 'Muted' : 'Unmuted', 'info');
+    });
+
+    // ---- Hold ----
+    btnHold.addEventListener('click', async () => {
+      if (!currentSession) return;
+      // Simple hold: set sendrecv to sendonly/recvonly
+      // Note: proper hold requires re-INVITE which SIP.js handles
+      isHeld = !isHeld;
+      const pc = currentSession.sessionDescriptionHandler?.peerConnection;
+      if (pc) {
+        pc.getSenders().forEach(sender => {
+          if (sender.track) sender.track.enabled = !isHeld;
+        });
+      }
+      btnHold.textContent = isHeld ? 'Unhold' : 'Hold';
+      log(isHeld ? 'On hold' : 'Resumed', 'info');
+    });
+
+    // ---- DTMF Dialpad ----
+    document.getElementById('dialpad').addEventListener('click', (e) => {
+      const dtmf = e.target.dataset.dtmf;
+      if (!dtmf) return;
+
+      // Play local DTMF tone feedback
+      playDtmfTone(dtmf);
+
+      // If no active call, append digit to call target input
+      if (!currentSession) {
+        const targetInput = document.getElementById('target');
+        targetInput.value += dtmf;
+        targetInput.focus();
+        return;
+      }
+
+      try {
+        const pc = currentSession.sessionDescriptionHandler?.peerConnection;
+        if (pc) {
+          const sender = pc.getSenders().find(s => s.track && s.track.kind === 'audio');
+          if (sender && sender.dtmf) {
+            sender.dtmf.insertDTMF(dtmf, 100, 70);
+            log(`DTMF: ${dtmf}`, 'info');
+          }
+        }
+      } catch (err) {
+        log(`DTMF error: ${err.message}`, 'error');
+      }
+
+      // Also append to target input for visual feedback
+      document.getElementById('target').value += dtmf;
+    });
+
+    // Init
+    updateButtons('disconnected');
+  </script>
+</body>
+</html>

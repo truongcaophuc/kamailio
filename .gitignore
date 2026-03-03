@@ -1,0 +1,16 @@
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor files
+.vscode/
+*.swp
+*.swo
+*~
+.#*
+
+# Logs
+*.log
+
+# Environment / secrets (nếu có)
+.env
